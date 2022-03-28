@@ -141,3 +141,10 @@ class IMDBApiDataLoader:
         data = self.clean(data)
         self.to_csv(data)
         return data
+
+if __name__ == "__main__":
+
+    ids_to_download = pd.read_csv('data/processed/filtered_id_list.csv')['imdb_id'].unique()
+
+    idl = IMDBApiDataLoader()
+    idl.run_all(ids_to_download)
