@@ -6,6 +6,10 @@ import numpy as np
 import pandas as pd
 from stem.control import Controller
 from stem import Signal
+from time import sleep
+import multiprocess as mp
+from glob import glob
+import os
 
 
 def get_tor_session():
@@ -91,8 +95,18 @@ class BoxOfficeMojoScraper:
             row[col] = data
         return row
 
+
+    def save_checkpoint(self,count,imdb_id,completed_pct):
+        print(f"{completed_pct}% done!")
+        self.to_df().to_csv(
+            f"data/raw/box_office_mojo_data_chkp_{count}_{imdb_id}.csv",
+            index=False,
+        )
+        self.movies = []  # reset otherwise would generate duplicates
+
     def extract_movies(self):
         tot_movies = len(self.imdb_id_list)
+        checkpoint = round(tot_movies / 10) - 1
         c = 1
         for imdb_id in self.imdb_id_list:
             objects = self.__get_movies_objects(imdb_id)
@@ -100,18 +114,14 @@ class BoxOfficeMojoScraper:
             row["imdb_id"] = imdb_id
             self.movies.append(row)
 
-            checkpoint = round(tot_movies / 10) - 1
             completed_pct = c * 100 / tot_movies
+            
+            if checkpoint >0:
+                if (c % checkpoint == 0): 
+                    self.save_checkpoint(c,imdb_id,completed_pct)
+            else:
+                self.save_checkpoint(c,imdb_id,completed_pct) #For cases where there are just a few movies left
 
-            if checkpoint > 0:
-                if c % checkpoint == 0:
-                    print(f"{completed_pct}% done!")
-
-                    self.to_df().to_csv(
-                        f"data/raw/box_office_mojo_data_chkp_{c}_{imdb_id}.csv",
-                        index=False,
-                    )
-                    self.movies = []  # reset otherwise would generate duplicates
 
             if (c % 100 == 0) & (self.tor_sess is not None):
                 renew_connection()
@@ -125,63 +135,94 @@ class BoxOfficeMojoScraper:
         return pd.DataFrame(self.movies)
 
 
-from time import sleep
-import multiprocess as mp
-from glob import glob
+def extract(imdb_ids, use_tor=True):
+
+    tor_sess = None
+
+    if use_tor:
+        renew_connection()
+
+        sleep(5)
+        tor_sess = get_tor_session()
+
+    bom2 = BoxOfficeMojoScraper(imdb_ids, tor_sess)
+    return bom2.extract_movies()
+    
+
+class BoxOfficeMojoTORScraper:
+
+    def __init__(self,ids_to_download = 'data/processed/filtered_id_list.csv',input_dir="data/raw",output_dir="data/processed"):
+        '''
+        download ids from list of ids or from a csv file with an imdb_id column
+        '''
+
+        self.filtered_id_csv = pd.read_csv(ids_to_download)["imdb_id"].values
+        self.ids_to_download = self.filtered_id_csv if isinstance(ids_to_download,str) else ids_to_download
+        self.input_dir = input_dir
+        self.output_dir = output_dir
+
+    def get_scraped_bom_files(self):
+            return glob(os.path.join(self.input_dir,"box_office_mojo_data_chkp*.csv"))
+
+    def run(self,n_jobs = -1):
+
+        scraped_files = self.get_scraped_bom_files()
+
+        if scraped_files:
+            imdb_ids_scraped = pd.concat(
+                [pd.read_csv(i, usecols=["imdb_id"]) for i in scraped_files],
+                ignore_index=True,
+            ).values.flatten()
+            self.ids_to_download = list(set(self.ids_to_download) - set(imdb_ids_scraped))
+
+        print(f"scraping {len(self.ids_to_download)} movies")
+        
+    
+        #TODO: This could be a function in itself
+
+
+        if len(self.ids_to_download)>0:
+            print(len(self.ids_to_download))
+            if n_jobs==-1:
+                n_jobs = mp.cpu_count()
+                
+            if len(self.ids_to_download) <= n_jobs:
+                n_jobs = 1
+            
+            batches = list(range(1, len(self.ids_to_download)+1, len(self.ids_to_download) // n_jobs))
+            
+            imdb_ids_batches = []
+            for i, j in zip(batches[:-1], batches[1:]):
+                imdb_ids_batches.append(list(self.ids_to_download[i:j]))
+            imdb_ids_batches.append(list(self.ids_to_download[batches[-1] :]))
+
+            with mp.Pool(n_jobs) as p:
+                data = p.map(extract, imdb_ids_batches)
+
+            # box_office_mojo_data_v2 = pd.concat(box_office_mojo_data_v2,ignore_index=True)
+
+            # Save dataframe
+
+            box_office_mojo_data_v2 = pd.concat(
+                [pd.read_csv(i) for i in self.get_scraped_bom_files()], ignore_index=True
+            )
+
+            box_office_mojo_data_v2 = box_office_mojo_data_v2.drop_duplicates().dropna(
+                subset=["Worldwide"]
+            )
+
+            box_office_mojo_data_v2.reset_index(drop=True, inplace=True)
+
+            box_office_mojo_data_v2.to_csv(
+                os.path.join(self.output_dir, "box_office_mojo_data_v2.csv"), index=False
+            )
+
+
+            
+        else:
+            print('all movies scraped')
 
 if __name__ == "__main__":
-
-    imdb_ids_list = pd.read_csv("data/processed/filtered_id_list.csv")["imdb_id"].values
-
-    scraped_files = glob("data/raw/*chkp*.csv")
-
-    if scraped_files:
-        imdb_ids_scraped = pd.concat(
-            [pd.read_csv(i, usecols=["imdb_id"]) for i in glob("data/raw/*chkp*.csv")],
-            ignore_index=True,
-        ).values.flatten()
-        imdb_ids_list = list(set(imdb_ids_list) - set(imdb_ids_scraped))
-
-    print(f"scraping {len(imdb_ids_list)} movies")
-
-    def extract(imdb_ids, use_tor=True):
-
-        tor_sess = None
-
-        if use_tor:
-            renew_connection()
-
-            sleep(5)
-            tor_sess = get_tor_session()
-
-        bom2 = BoxOfficeMojoScraper(imdb_ids, tor_sess)
-        return bom2.extract_movies()
-
-    n_jobs = mp.cpu_count()
-
-    batches = list(range(1, len(imdb_ids_list), len(imdb_ids_list) // n_jobs))
-    imdb_ids_batches = []
-    for i, j in zip(batches[:-1], batches[1:]):
-        imdb_ids_batches.append(list(imdb_ids_list[i:j]))
-    imdb_ids_batches.append(list(imdb_ids_list[batches[-1] :]))
-
-    with mp.Pool(n_jobs) as p:
-        data = p.map(extract, imdb_ids_batches)
-
-    # box_office_mojo_data_v2 = pd.concat(box_office_mojo_data_v2,ignore_index=True)
-
-    # Save dataframe
-
-    box_office_mojo_data_v2 = pd.concat(
-        [pd.read_csv(i) for i in glob("data/raw/*chkp*.csv")], ignore_index=True
-    )
-
-    box_office_mojo_data_v2 = box_office_mojo_data_v2.drop_duplicates().dropna(
-        subset=["Worldwide"]
-    )
-
-    box_office_mojo_data_v2.reset_index(drop=True, inplace=True)
-
-    box_office_mojo_data_v2.to_csv(
-        "data/processed/box_office_mojo_data_v2.csv", index=False
-    )
+    #os.system("tor")
+    bom_scraper = BoxOfficeMojoTORScraper()
+    bom_scraper.run()

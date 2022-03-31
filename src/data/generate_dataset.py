@@ -6,6 +6,8 @@ import os
 import argparse
 import requests
 from joblib import Parallel, delayed
+from box_office_mojo_scraper import BoxOfficeMojoTORScraper
+from imdb_api_data import IMDBApiDataLoader
 
 USE_COLUMNS = [
     "imdb_id",
@@ -26,7 +28,7 @@ USE_COLUMNS = [
     "languages",
     "Budget",
     "cover url",
-    "production companies",
+    "production companies"
 ]
 
 processed_meta_data = pd.read_csv("data/processed/meta_data_cleaned.csv")
@@ -170,6 +172,8 @@ def get_imdb_dump_data(
     # MERGE #
     titles = titles.merge(grouped_principals, how="left", on="imdb_id")
     titles = titles.merge(ratings, how="left", on="imdb_id")
+
+    titles[["imdb_id"]].to_csv("data/processed/filtered_id_list.csv", index=False)
     titles.to_csv("data/processed/imdb.csv", index=False)
 
 
@@ -198,10 +202,7 @@ def merge_all(use_columns=USE_COLUMNS):
 
     df = df.merge(poster_ratings, how="left", on="imdb_id")
 
-    df = df.merge(box_office_mojo_data_v2, how="left", on="imdb_id")
-
-    df[["imdb_id"]].to_csv("data/processed/filtered_id_list.csv", index=False)
-    df = df.dropna(subset=["revenue_worldwide_BOM"])
+    df = df.merge(box_office_mojo_data_v2, how="inner", on="imdb_id")
 
     # Final language filter
     df = df[
@@ -286,6 +287,19 @@ def data_splits(
         os.path.join(output_dir, "test.csv"), index=False
     )
 
+def get_bom_data():
+    bom_scraper = BoxOfficeMojoTORScraper()
+    bom_scraper.run()
+    box_office_mojo_data_v2 = pd.read_csv("data/processed/box_office_mojo_data_v2.csv")
+    box_office_mojo_data_v2[["imdb_id"]].to_csv("data/processed/filtered_id_list.csv", index=False)
+
+def get_imdb_api_data():
+    ids_to_download = pd.read_csv("data/processed/filtered_id_list.csv")[
+        "imdb_id"
+    ].unique()
+    idl = IMDBApiDataLoader()
+    idl.run_all(ids_to_download)
+
 
 if __name__ == "__main__":
 
@@ -296,6 +310,7 @@ if __name__ == "__main__":
     parser.add_argument("--metadata", default=0, type=int)
     parser.add_argument("--imdb_dump_data", default=0, type=int)
     parser.add_argument("--train_proportion", default=0.7, type=float)
+    parser.add_argument("--merge_split", default=0, type=int)
 
     args = parser.parse_args()
 
@@ -307,9 +322,16 @@ if __name__ == "__main__":
         print("processing imdb dump data")
         get_imdb_dump_data()
 
-    print("merging all")
-    merge_all()
-    data_splits(train_proportion=args.train_proportion)
+    if args.bom_data == 1:
+        get_bom_data()
+
+    if args.imdb_api_data == 1:
+        get_imdb_api_data()
+
+    if args.merge_split == 1:
+        print("merging all")
+        merge_all()
+        data_splits(train_proportion=args.train_proportion)
 
     if args.download_posters == 1:
         print("downloading posters")

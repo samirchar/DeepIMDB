@@ -13,7 +13,6 @@ def extract_from_list_col(dataframe, col, max_items=4, normalize=True):
 
 
 def extract_from_list(list_, max_items=4, normalize=True):
-
     if isinstance(list_, list):
         if normalize:
             list_ = [i.lower().strip() for i in list_[:4]]
@@ -51,20 +50,25 @@ class IMDBApiDataLoader:
         self.output_dir = output_dir
 
     def download_from_api(self, ids_to_download, movies_per_file=100):
+        
         # Get Data From API
         loaded_ids = []
         cg = Cinemagoer()
 
         # Continue where we left off
         files_names = glob(os.path.join(self.input_dir, "imdb_api_chkp_*.pickle"))
+        #print(files_names)
         if files_names:
             for i in files_names:
                 with open(i, "rb") as handle:
                     b = pickle.load(handle)
                 loaded_ids.extend([j["imdb_id"] for j in b])
 
+        #print(len(loaded_ids),len(ids_to_download))
         ids_to_download = list(set(ids_to_download) - set(loaded_ids))
+
         num_movies = len(ids_to_download)
+        movies_per_file = min(num_movies,movies_per_file)
 
         print(f"fetching data of {num_movies} movies")
         c = 1
@@ -99,7 +103,9 @@ class IMDBApiDataLoader:
                 ) as handle:
                     pickle.dump(rows, handle, protocol=pickle.HIGHEST_PROTOCOL)
                 rows = []
+            
             c += 1
+            
 
     def to_df(self):
         # Generate dataframe from downloaded data
